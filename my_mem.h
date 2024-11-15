@@ -68,6 +68,7 @@ void get_process_name(pid_t pid, char *process_name) {
     }
 }
 
+
 // ==== SHARED MEMORY INITIALIZATION AND CLEANUP ====
 // Initialize shared memory for processes
 void initialize_process() {
@@ -81,7 +82,6 @@ void initialize_process() {
         perror("shmat for process count failed");
         exit(1);
     }
-
     int shm_id = shmget(1234, sizeof(ProcessMemoryInfo) * MAX_PROCESSES, IPC_CREAT | 0666);
     if (shm_id < 0) {
         perror("shmget for process map failed");
@@ -93,6 +93,7 @@ void initialize_process() {
         exit(1);
     }
 }
+
 
 // Initialize memory tracker
 void initialize_memory_tracker() {
@@ -119,7 +120,29 @@ ProcessMemoryInfo* find_process(pid_t pid) {
     }
     return NULL;
 }
+// Add finished process to circular buffer
+void add_finished_process(const ProcessMemoryInfo *process_info) {
+    finished_process_map[finished_process_index] = *process_info;
+    finished_process_index = (finished_process_index + 1) % MAX_PROCESSES;
+    if (finished_process_count < MAX_PROCESSES) {
+        finished_process_count++;
+    }
+}
 
+// Remove process from active list
+void remove_process(pid_t pid) {
+    for (int i = 0; i < *process_count; i++) {
+        if (process_map[i].pid == pid) {
+            ProcessMemoryInfo *completed_process = &process_map[i];
+            get_current_time(completed_process->end_time, sizeof(completed_process->end_time));
+            add_finished_process(completed_process);
+
+            memmove(&process_map[i], &process_map[i + 1], (*process_count - i - 1) * sizeof(ProcessMemoryInfo));
+            (*process_count)--;
+            break;
+        }
+    }
+}
 // Update memory allocation/deallocation
 void update_process_memory(pid_t pid, size_t size, int is_allocated) {
     ProcessMemoryInfo *process_info = find_process(pid);
@@ -144,29 +167,7 @@ void update_process_memory(pid_t pid, size_t size, int is_allocated) {
     process_info->memory_leak = process_info->allocated_size - process_info->deallocated_size;
 }
 
-// Add finished process to circular buffer
-void add_finished_process(const ProcessMemoryInfo *process_info) {
-    finished_process_map[finished_process_index] = *process_info;
-    finished_process_index = (finished_process_index + 1) % MAX_PROCESSES;
-    if (finished_process_count < MAX_PROCESSES) {
-        finished_process_count++;
-    }
-}
 
-// Remove process from active list
-void remove_process(pid_t pid) {
-    for (int i = 0; i < *process_count; i++) {
-        if (process_map[i].pid == pid) {
-            ProcessMemoryInfo *completed_process = &process_map[i];
-            get_current_time(completed_process->end_time, sizeof(completed_process->end_time));
-            add_finished_process(completed_process);
-
-            memmove(&process_map[i], &process_map[i + 1], (*process_count - i - 1) * sizeof(ProcessMemoryInfo));
-            (*process_count)--;
-            break;
-        }
-    }
-}
 
 // ==== MEMORY MANAGEMENT FUNCTIONS ====
 void *my_malloc(size_t size) {
@@ -199,7 +200,6 @@ void *my_calloc(size_t num, size_t size) {
     }
     return ptr;
 }
-
 // ==== DISPLAY FUNCTIONS ====
 // Print active processes
 void print_active_processes() {
@@ -228,13 +228,22 @@ void print_finished_processes() {
     }
 }
 
-// Log memory leak
-void log_memory_leak(const ProcessMemoryInfo *process_info) {
-    if (process_info->memory_leak > 0) {
-        printf(RED_COLOR "Memory Leak Detected:\n" RESET_COLOR);
-        printf("PID: %d, Process Name: %s, Leak: %zu bytes\n",
-               process_info->pid, process_info->process_name, process_info->memory_leak);
+void print_memory_info() {
+    printf("PID\tProcess Name\tAllocated\tDeallocated\tMemory Leak\n");
+    printf("--------------------------------------------------------\n");
+    for (int i = 0; i < *process_count; i++) {
+        ProcessMemoryInfo *p = &process_map[i];
+        if (p->pid) {
+            printf("%d\t%s \t\t%zu bytes \t%zu bytes \t%zu bytes\n",
+                   p->pid,
+                   p->process_name,
+                   p->allocated_size,
+                   p->deallocated_size,
+                   p->memory_leak);
+        }
     }
+    printf("\n"); 
 }
+
 
 #endif
