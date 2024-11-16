@@ -24,6 +24,7 @@ typedef struct {
 
 static ProcessMemoryInfo *process_map = NULL; // Pointer for shared memory of process_map
 static int *process_count = NULL; // Pointer for shared memory to store process count
+int process_index = 0; 
 
 // Initialize shared memory for process tracking
 void initialize_memory_tracker() {
@@ -137,15 +138,36 @@ void *my_calloc(size_t num, size_t size) {
 }
 
 void *my_malloc(size_t size) {
-    if (!process_map) initialize_memory_tracker();
+    // Allocate memory using system malloc
     void *ptr = malloc(size);
-    if (ptr) {
-        update_process_memory(getpid(), size, 1);
-        printf("Allocated %zu bytes for PID %d\n", size, getpid());
-        return ptr;
+
+    // Get the PID of the current process
+    pid_t pid = getpid();
+
+    // Find the process in the memory tracker
+    ProcessMemoryInfo *process_info = find_process(pid);
+
+    if (!process_info) {
+        // Process not found, insert new process into the circular buffer
+        process_info = &process_map[process_index];  // Use circular buffer index
+        process_info->pid = pid;
+        snprintf(process_info->process_name, sizeof(process_info->process_name), "Process %d", pid);
     }
-    return NULL;
+
+    // Update the allocated memory size for the current process
+    process_info->allocated_size += size;
+
+    // Increment the process count if it's less than the maximum
+    if (*process_count < MAX_PROCESSES) {
+        (*process_count)++;
+    } else {
+        // If count reaches the limit, move the index to the next process (circular)
+        process_index = (process_index + 1) % MAX_PROCESSES;
+    }
+
+    return ptr;  // Return allocated memory
 }
+
 
 void *my_realloc(void *ptr, size_t old_size, size_t new_size) {
     if (!process_map) initialize_memory_tracker();
