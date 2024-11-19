@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <sys/types.h>
+#include <semaphore.h>
 
 #define MAX_PROCESSES 1024 
 
@@ -28,11 +28,19 @@ typedef struct {
     int min;
 } ProcessMemoryInfo;
 
-static ProcessMemoryInfo *process_map = NULL; // Pointer for shared memory of process_map
-static int *process_count = NULL; // Pointer for shared memory to store process count
+static sem_t process_semaphore;
+static ProcessMemoryInfo *process_map = NULL; // Pointers for shared memory
+static int *process_count = NULL;
 
 // Access Shared memory when a new process wants memory
 void initialize_process(){
+    
+    // Semaphore to prevent race conditions
+    if (sem_init(&process_semaphore, 1, 1) < 0) { 
+        perror("sem_init failed");
+        exit(1);
+    }
+    
     int count_shm_id = shmget(ftok("/tmp/shmfile_count",64), sizeof(int), IPC_CREAT | 0666);
     if (count_shm_id < 0) {
         perror("shmget for process count failed");
@@ -59,9 +67,22 @@ void initialize_memory_tracker() {
     memset(process_map, 0, sizeof(ProcessMemoryInfo) * MAX_PROCESSES); // Initialize the shared memory
 }
 
-void cleanup_memory_tracker() { // Detaching Shared Memory
+void cleanup_memory_tracker() { // Detaching and Deleting Shared Memory, Semaphore
     if (process_map) shmdt(process_map);  
     if (process_count) shmdt(process_count);
+    
+    int count_shm_id = shmget(ftok("/tmp/shmfile_count", 64), sizeof(int), 0666);
+    if (count_shm_id >= 0) {
+        shmctl(count_shm_id, IPC_RMID, NULL); // Remove process count shared memory
+    }
+    int shm_id = shmget(12345, sizeof(ProcessMemoryInfo) * MAX_PROCESSES, 0666);
+    if (shm_id >= 0) {
+        shmctl(shm_id, IPC_RMID, NULL); // Remove process map shared memory
+    }
+    
+    if (sem_destroy(&process_semaphore) < 0) {
+        perror("sem_destroy failed");
+    }
 }
 
 // Getting name of the binary file 
@@ -102,6 +123,8 @@ void remove_process(pid_t pid) {
 
 // Updating Shared Memory Based on Allocation and Deallocation 
 void update_process_memory(pid_t pid, size_t size, int is_allocated) {
+    sem_wait(&process_semaphore); // Semaphore to prevent Race condition
+    
     ProcessMemoryInfo *process_info = find_process(pid);
     if (process_info == NULL) {
         if (*process_count == MAX_PROCESSES) {  // If MAX_PROCESSES is reached, remove the first process
@@ -130,6 +153,7 @@ void update_process_memory(pid_t pid, size_t size, int is_allocated) {
     process_info->month = current_time->tm_mon + 1;
     process_info->hour = current_time->tm_hour;
     process_info->min = current_time->tm_min;
+    sem_post(&process_semaphore);
 }
 
 void *my_malloc(size_t size) {
@@ -144,8 +168,8 @@ void *my_malloc(size_t size) {
 
 void my_free(void *ptr, size_t size) {
     if (ptr) {
-        update_process_memory(getpid(), size, 0); // Mark as deallocated
-        free(ptr); 
+        free(ptr);
+        update_process_memory(getpid(), size, 0); // Mark as deallocated 
     }
 }
 
@@ -160,6 +184,7 @@ void *my_realloc(void *ptr, size_t old_size, size_t new_size) {
 }
 
 void *my_calloc(size_t num, size_t size) {
+    if(!process_map) initialize_process();
     size_t total_size = num * size;
     void *ptr = malloc(total_size); 
     if (ptr) {
@@ -212,4 +237,3 @@ void print_memory_info() {
 }
 
 #endif 
-
